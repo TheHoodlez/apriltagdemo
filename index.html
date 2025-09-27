@@ -36,15 +36,19 @@
     </div>
   </div>
 
-  <!-- AprilTag WASM-Library laden (Root-Pfad) -->
+  <!-- AprilTag WASM korrekt laden -->
   <script>
-    (function tryLoadLocal(){
-      const s=document.createElement('script');
-      s.src='./apriltag_wasm.js';
-      s.async=true;
-      s.onerror=()=>console.warn('AprilTag JS nicht gefunden. Detection bleibt aus, Status zeigt Hinweis.');
-      document.head.appendChild(s);
-    })();
+    window.Module = window.Module || {};
+    window.Module.locateFile = function (path) {
+      if (path.endsWith('.wasm')) return './apriltag_wasm.wasm';
+      return path;
+    };
+  </script>
+  <script>
+    const s = document.createElement('script');
+    s.src = './apriltag_wasm.js';
+    s.async = true;
+    document.head.appendChild(s);
   </script>
 
   <script>
@@ -58,7 +62,8 @@
     const scaleEl = document.getElementById('scale');
 
     let running = true;
-    let detector = null;
+    let tag = null;
+    let detectorReady = false;
 
     const work = document.createElement('canvas');
     const wctx = work.getContext('2d', { willReadFrequently:true });
@@ -75,7 +80,7 @@
       ctx.clearRect(0,0,hud.width,hud.height);
       ctx.save();
       ctx.fillStyle='rgba(0,0,0,.45)';
-      ctx.fillRect(10,10, Math.min(380, 20 + text.length*7.2), 36);
+      ctx.fillRect(10,10, Math.min(420, 20 + text.length*7.2), 36);
       ctx.fillStyle='#00e0ff';
       ctx.font='16px system-ui, Arial';
       ctx.fillText(text, 20, 34);
@@ -95,31 +100,29 @@
       return;
     }
 
-    // 2) AprilTag-Detector initialisieren
-    async function initDetectorIfAvailable(){
-      try{
-        const factory =
-          window.createAprilTagDetector ||
-          (window.AprilTag && window.AprilTag.createDetector) ||
-          (window.AprilTagDetector && window.AprilTagDetector.create);
+    // 2) Auf Apriltag warten
+    async function waitForApriltag(maxMs=5000){
+      const t0 = performance.now();
+      while (!window.Apriltag && performance.now()-t0 < maxMs){
+        await new Promise(r=>setTimeout(r,100));
+      }
+      return !!window.Apriltag;
+    }
 
-        if (!factory){
-          setStatus('AprilTag-Library fehlt (JS/WASM nicht gefunden)');
-          drawStatusBox('ℹ️ AprilTag: Library fehlt – lege Dateien ins Repo');
-          return false;
-        }
-        detector = await factory({ family:'tag36h11' });
-        setStatus('AprilTag bereit');
-        return true;
+    if (await waitForApriltag()){
+      try{
+        tag = window.Apriltag(() => {
+          detectorReady = true;
+          setStatus('AprilTag bereit');
+        });
       }catch(e){
         setStatus('AprilTag init fehlgeschlagen: '+e.message);
         drawStatusBox('⚠️ AprilTag Init-Fehler');
-        return false;
       }
+    }else{
+      setStatus('AprilTag-Library fehlt');
+      drawStatusBox('ℹ️ AprilTag: Library fehlt – prüfen, ob Dateien im Root liegen');
     }
-
-    let detectorReady = await initDetectorIfAvailable();
-    setTimeout(async ()=>{ if(!detectorReady){ detectorReady = await initDetectorIfAvailable(); } }, 1200);
 
     scaleEl.addEventListener('input', fit);
     toggleBtn.onclick = () => { running = !running; toggleBtn.textContent = running ? '⏸️ Pause' : '▶️ Start'; if (running) requestAnimationFrame(loop); };
@@ -132,7 +135,7 @@
       ctx.strokeStyle = '#00e0ff';
       ctx.fillStyle = '#00e0ff';
       for(const d of dets){
-        const corners = (d.corners || d.p || []).map(pt=>({x:pt.x, y:pt.y}));
+        const corners = (d.corners || []).map(pt=>({x:pt.x, y:pt.y}));
         if (corners.length>=4){
           ctx.beginPath();
           ctx.moveTo(corners[0].x, corners[0].y);
@@ -140,11 +143,9 @@
           ctx.closePath();
           ctx.stroke();
         }
-        const c = d.center || d.center2d || {x:d.cx, y:d.cy};
-        if (c && Number.isFinite(c.x) && Number.isFinite(c.y)){
-          ctx.beginPath(); ctx.arc(c.x, c.y, 5, 0, Math.PI*2); ctx.fill();
-          ctx.fillText('ID: ' + (d.id ?? d.tag_id ?? d.tagId), c.x+8, c.y-8);
-        }
+        const c = d.center;
+        if (c){ ctx.beginPath(); ctx.arc(c.x, c.y, 5, 0, Math.PI*2); ctx.fill();
+          ctx.fillText('ID: ' + d.id, c.x+8, c.y-8); }
       }
       ctx.restore();
     }
@@ -158,7 +159,7 @@
     }
 
     async function detectOnce(){
-      if (!detector) return [];
+      if (!detectorReady || !tag) return [];
       wctx.save();
       wctx.clearRect(0,0,work.width,work.height);
       if (mirrorCb.checked){ wctx.translate(work.width,0); wctx.scale(-1,1); }
@@ -168,27 +169,21 @@
       const img = wctx.getImageData(0,0,work.width,work.height);
       const gray = toGray8(img, work.width, work.height);
 
-      let raw = [];
-      try{
-        raw = detector.detect
-          ? await detector.detect(gray, work.width, work.height, { quad_decimate: 1.0 })
-          : await detector(gray, work.width, work.height);
-      }catch(e){
-        setStatus('Detect-Fehler: '+e.message);
-        return [];
-      }
+      let raw=[];
+      try{ raw = tag.detect(gray, work.width, work.height) || []; }
+      catch(e){ setStatus('Detect-Fehler: '+e.message); return []; }
 
       const sx = hud.width / work.width, sy = hud.height / work.height;
       return raw.map(d => ({
-        id: d.id ?? d.tag_id ?? d.tagId,
-        center: { x: (d.center?.x ?? d.cx)*sx, y: (d.center?.y ?? d.cy)*sy },
-        corners: (d.corners||d.p||[]).map(pt => ({ x: pt.x*sx, y: pt.y*sy }))
+        id: d.id,
+        center: { x: d.center.x*sx, y: d.center.y*sy },
+        corners: (d.corners||[]).map(pt => ({ x: pt.x*sx, y: pt.y*sy }))
       }));
     }
 
     async function loop(){
       if (!running) return;
-      if (!detector){ drawStatusBox('ℹ️ AprilTag: Library fehlt'); requestAnimationFrame(loop); return; }
+      if (!detectorReady){ drawStatusBox('ℹ️ Lade AprilTag…'); requestAnimationFrame(loop); return; }
       const dets = await detectOnce();
       if (dets.length===0){ drawStatusBox('🔎 Keine Tags gefunden (tag36h11)'); }
       else { drawDetections(dets); }
