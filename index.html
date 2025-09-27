@@ -36,13 +36,11 @@
     </div>
   </div>
 
-  <!-- Wenn vorhanden, diese Datei lokal bereitstellen (empfohlen) -->
-  <!-- Pfad: vendor/apriltag/apriltag.min.js  +  vendor/apriltag/apriltag.wasm -->
+  <!-- AprilTag WASM-Library laden -->
   <script>
-    // Dynamischer Loader: lädt die lokale JS, wenn vorhanden.
     (function tryLoadLocal(){
       const s=document.createElement('script');
-      s.src='./vendor/apriltag/apriltag.min.js';
+      s.src='./vendor/apriltag/apriltag_wasm.js';
       s.async=true;
       s.onerror=()=>console.warn('AprilTag JS nicht gefunden. Detection bleibt aus, Status zeigt Hinweis.');
       document.head.appendChild(s);
@@ -84,7 +82,7 @@
       ctx.restore();
     }
 
-    // 1) Kamera
+    // 1) Kamera starten
     try{
       const stream = await navigator.mediaDevices.getUserMedia({ video:{ facingMode:'environment' }, audio:false });
       video.srcObject = stream;
@@ -97,12 +95,8 @@
       return;
     }
 
-    // 2) AprilTag-Detector initialisieren (wenn Lib da)
+    // 2) AprilTag-Detector initialisieren
     async function initDetectorIfAvailable(){
-      // Häufige Varianten verschiedener Browser-Builds:
-      // - window.createAprilTagDetector(opts)
-      // - window.AprilTag.createDetector(opts)
-      // - window.AprilTagDetector.create(opts)
       try{
         const factory =
           window.createAprilTagDetector ||
@@ -124,7 +118,6 @@
       }
     }
 
-    // später erneut versuchen (falls Script etwas später lädt)
     let detectorReady = await initDetectorIfAvailable();
     setTimeout(async ()=>{ if(!detectorReady){ detectorReady = await initDetectorIfAvailable(); } }, 1200);
 
@@ -166,7 +159,6 @@
 
     async function detectOnce(){
       if (!detector) return [];
-      // Bild in Arbeitsleinwand (mit optionalem Spiegeln)
       wctx.save();
       wctx.clearRect(0,0,work.width,work.height);
       if (mirrorCb.checked){ wctx.translate(work.width,0); wctx.scale(-1,1); }
@@ -176,9 +168,6 @@
       const img = wctx.getImageData(0,0,work.width,work.height);
       const gray = toGray8(img, work.width, work.height);
 
-      // Häufige Signaturen:
-      // detector.detect(gray, width, height, options)
-      // oder detector(gray, width, height)
       let raw = [];
       try{
         raw = detector.detect
@@ -189,7 +178,6 @@
         return [];
       }
 
-      // Koordinaten auf HUD skalieren
       const sx = hud.width / work.width, sy = hud.height / work.height;
       return raw.map(d => ({
         id: d.id ?? d.tag_id ?? d.tagId,
@@ -212,3 +200,4 @@
   </script>
 </body>
 </html>
+
