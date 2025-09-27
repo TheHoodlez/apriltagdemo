@@ -5,147 +5,138 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>AprilTag – Live Detection</title>
   <style>
-    body{margin:0;background:#0b0f1a;color:#eaf2ff;font-family:system-ui,Arial,sans-serif;display:flex;min-height:100vh;align-items:center;justify-content:center}
-    .wrap{width:min(100vw,900px);padding:16px}
-    h1{margin:0 0 12px}
-    .view{position:relative;background:#000;border-radius:12px;overflow:hidden}
-    video,canvas{width:100%;display:block}
-    .hud{position:absolute;inset:0;pointer-events:none}
-    .panel{margin-top:12px;background:#121a2a;border:1px solid #203153;border-radius:10px;padding:10px}
-    #status{font-weight:600}
-    .small{opacity:.9;font-size:12px}
+    body { margin:0; background:#0b0f1a; color:#eaf2ff;
+           font-family:sans-serif; display:flex; flex-direction:column;
+           align-items:center; justify-content:center; height:100vh; }
+    video,canvas { width:100%; max-width:800px; border-radius:10px; }
+    #status { margin-top:12px; font-weight:bold; }
+    .ok { color:#5cff7a; }
+    .error { color:#ff5c5c; }
   </style>
 </head>
 <body>
-<div class="wrap">
-  <h1>📷 AprilTag – Live Detection (tag36h11)</h1>
-  <div class="view">
-    <video id="video" autoplay playsinline></video>
-    <canvas id="hud" class="hud"></canvas>
-  </div>
-  <div class="panel">
-    <div id="status">Status: Initialisiere…</div>
-    <div id="debug" class="small"></div>
-  </div>
-</div>
+  <h1>📷 AprilTag – Live Detection</h1>
+  <video id="video" autoplay playsinline></video>
+  <canvas id="overlay"></canvas>
+  <div id="status">Status: Initialisiere…</div>
 
-<script>
-  // Dateien liegen im selben Ordner wie index.html
-  const JS_URL   = './apriltag_wasm.js';
-  const WASM_URL = './apriltag_wasm.wasm';
+  <script>
+    const APRILTAG_JS   = './apriltag_wasm.js';
+    const APRILTAG_WASM = './apriltag_wasm.wasm';
+    const statusEl = document.getElementById('status');
+    const overlay = document.getElementById('overlay');
+    const ctx = overlay.getContext('2d', { willReadFrequently: true });
 
-  const statusEl = document.getElementById('status');
-  const debugEl  = document.getElementById('debug');
-  const setStatus = (t)=> statusEl.textContent = 'Status: ' + t;
-  const log = (t)=> debugEl.textContent = t;
-
-  // Kamerabild vorbereiten
-  (async ()=>{
-    try{
-      const stream = await navigator.mediaDevices.getUserMedia({ video:{ facingMode:'environment' }, audio:false });
-      const v = document.getElementById('video');
-      v.srcObject = stream; await v.play();
-      const hud = document.getElementById('hud');
-      hud.width  = v.videoWidth  || 640;
-      hud.height = v.videoHeight || 480;
-    }catch(e){ setStatus('Kamera-Fehler: ' + e.message); }
-  })();
-
-  // .wasm für Emscripten lokalisieren
-  window.Module = { locateFile: (p)=> p.endsWith('.wasm') ? WASM_URL : p };
-
-  // Loader laden
-  const s = document.createElement('script');
-  s.src = JS_URL + '?v=' + Date.now();
-  s.async = true;
-  s.onload  = ()=> setStatus('JS geladen – warte auf Initialisierung…');
-  s.onerror = ()=> setStatus('JS konnte nicht geladen werden ❌');
-  document.head.appendChild(s);
-</script>
-
-<script>
-  // Initialisierung, die mit Apriltag / AprilTag / AprilTagWasm klarkommt
-  (async ()=>{
-    function pickFactory(){
-      return window.Apriltag || window.AprilTag || window.AprilTagWasm || null;
+    function setStatus(msg, ok=false) {
+      statusEl.textContent = "Status: " + msg;
+      statusEl.className = ok ? "ok" : "error";
     }
-    async function waitForFactory(ms=12000){
-      const t0 = performance.now();
-      while(!pickFactory() && performance.now()-t0 < ms){
-        await new Promise(r=>setTimeout(r,100));
+
+    async function checkFiles() {
+      try {
+        const js = await fetch(APRILTAG_JS, {method:'HEAD'});
+        if (!js.ok) { setStatus("apriltag_wasm.js fehlt ❌"); return false; }
+        const wasm = await fetch(APRILTAG_WASM, {method:'HEAD'});
+        if (!wasm.ok) { setStatus("apriltag_wasm.wasm fehlt ❌"); return false; }
+        setStatus("Dateien gefunden ✅", true);
+        return true;
+      } catch(e) {
+        setStatus("Fehler beim Prüfen: "+e.message);
+        return false;
       }
-      return pickFactory();
-    }
-    async function createModule(factory){
-      // 1) Preferred: Factory({ locateFile }) → Promise
-      try{
-        const r = factory({ locateFile:(p)=> p.endsWith('.wasm') ? WASM_URL : p });
-        if (r && typeof r.then === 'function') return await r;
-        if (r) return r;
-      }catch{}
-      // 2) Fallback: factory() → Promise/Objekt
-      try{
-        const r = factory();
-        if (r && typeof r.then === 'function') return await r;
-        if (r) return r;
-      }catch{}
-      // 3) Fallback: new factory()
-      try{ return new factory(); }catch{}
-      return null;
     }
 
-    const factory = await waitForFactory();
-    if (!factory){ setStatus('AprilTag JS nicht gefunden ❌'); return; }
-    log('Factory erkannt: ' + (factory.name || '(anonym)'));
+    async function start() {
+      if (!(await checkFiles())) return;
 
-    let mod = await createModule(factory);
-    if (!mod){ setStatus('AprilTag init fehlgeschlagen ❌'); return; }
+      const video = document.getElementById('video');
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ video:{ facingMode:"environment" } });
+        video.srcObject = stream;
+        await video.play();
+        overlay.width = video.videoWidth;
+        overlay.height = video.videoHeight;
+        setStatus("Kamera läuft ✅", true);
+      } catch(e) {
+        setStatus("Kamera-Fehler: "+e.message);
+        return;
+      }
 
-    // Mögliche Orte für detect(): mod.detect oder mod.Apriltag.detect etc.
-    const detect =
-      (typeof mod.detect === 'function' && mod.detect.bind(mod)) ||
-      (mod.Apriltag && typeof mod.Apriltag.detect === 'function' && mod.Apriltag.detect.bind(mod.Apriltag)) ||
-      (mod.AprilTag && typeof mod.AprilTag.detect === 'function' && mod.AprilTag.detect.bind(mod.AprilTag)) ||
-      null;
+      // AprilTag vorbereiten
+      window.Module = { locateFile: (p)=> p.endsWith('.wasm') ? APRILTAG_WASM : p };
+      const s = document.createElement('script');
+      s.src = APRILTAG_JS; s.async = true;
+      s.onload = ()=> initAprilTag(video);
+      s.onerror = ()=> setStatus("AprilTag JS konnte nicht geladen werden ❌");
+      document.head.appendChild(s);
+    }
 
-    if (!detect){ setStatus('AprilTag: detect() nicht gefunden ❌'); log('Eigenschaften: ' + Object.keys(mod).join(', ')); return; }
+    async function initAprilTag(video) {
+      setStatus("AprilTag wird initialisiert…");
+      try {
+        const apriltag = await window.Apriltag({ locateFile:(p)=>p.endsWith('.wasm')?APRILTAG_WASM:p });
+        if (!apriltag.detect) {
+          setStatus("detect() nicht verfügbar ❌");
+          return;
+        }
+        setStatus("AprilTag bereit ✅", true);
+        detectLoop(video, apriltag);
+      } catch(e) {
+        setStatus("Init-Fehler: "+e.message);
+      }
+    }
 
-    setStatus('AprilTag bereit ✅');
-
-    // ------- Detection Loop -------
-    const v = document.getElementById('video');
-    const hud = document.getElementById('hud');
-    const ctx = hud.getContext('2d', { willReadFrequently:true });
-    const work = document.createElement('canvas');
-    const wctx = work.getContext('2d', { willReadFrequently:true });
-    const scale = 0.8;
-    work.width  = (v.videoWidth||640)*scale;
-    work.height = (v.videoHeight||480)*scale;
-
-    const toGray = (img,w,h)=>{const g=new Uint8Array(w*h),d=img.data;for(let i=0,j=0;i<d.length;i+=4,j++){g[j]=(d[i]*.2126+d[i+1]*.7152+d[i+2]*.0722)|0;}return g;};
+    function toGray8(imgData,w,h){
+      const g=new Uint8Array(w*h),d=imgData.data;
+      for(let i=0,j=0;i<d.length;i+=4,j++){
+        g[j]=(d[i]*.2126+d[i+1]*.7152+d[i+2]*.0722)|0;
+      }
+      return g;
+    }
 
     function draw(dets){
-      ctx.clearRect(0,0,hud.width,hud.height);
+      ctx.clearRect(0,0,overlay.width,overlay.height);
       ctx.lineWidth=3; ctx.strokeStyle='#00e0ff'; ctx.fillStyle='#00e0ff';
       for(const d of dets){
-        const cs=d.corners||[], c=d.center;
-        if(cs.length>=4){ ctx.beginPath(); ctx.moveTo(cs[0].x,cs[0].y); for(let i=1;i<4;i++) ctx.lineTo(cs[i].x,cs[i].y); ctx.closePath(); ctx.stroke(); }
-        if(c){ ctx.beginPath(); ctx.arc(c.x,c.y,5,0,Math.PI*2); ctx.fill(); ctx.fillText('ID: '+d.id, c.x+8, c.y-8); }
+        if(d.corners){
+          ctx.beginPath();
+          ctx.moveTo(d.corners[0].x,d.corners[0].y);
+          for(let i=1;i<d.corners.length;i++) ctx.lineTo(d.corners[i].x,d.corners[i].y);
+          ctx.closePath(); ctx.stroke();
+        }
+        if(d.center){
+          ctx.beginPath();
+          ctx.arc(d.center.x,d.center.y,5,0,2*Math.PI);
+          ctx.fill();
+          ctx.fillText("ID:"+d.id,d.center.x+8,d.center.y-8);
+        }
       }
     }
 
-    async function loop(){
-      wctx.drawImage(v,0,0,work.width,work.height);
-      const img = wctx.getImageData(0,0,work.width,work.height);
-      const gray = toGray(img,work.width,work.height);
-      let raw=[]; try{ raw = detect(gray, work.width, work.height) || []; }catch(e){ setStatus('Detect-Fehler: ' + e.message); }
-      const sx=hud.width/work.width, sy=hud.height/work.height;
-      const dets = raw.map(d=>({ id:d.id, center:{x:d.center.x*sx,y:d.center.y*sy}, corners:(d.corners||[]).map(p=>({x:p.x*sx,y:p.y*sy})) }));
-      draw(dets);
-      requestAnimationFrame(loop);
+    function detectLoop(video, apriltag) {
+      const work=document.createElement('canvas');
+      const wctx=work.getContext('2d',{willReadFrequently:true});
+      work.width=video.videoWidth; work.height=video.videoHeight;
+
+      async function step(){
+        wctx.drawImage(video,0,0,work.width,work.height);
+        const img=wctx.getImageData(0,0,work.width,work.height);
+        const gray=toGray8(img,work.width,work.height);
+        let raw=[];
+        try{ raw=apriltag.detect(gray,work.width,work.height)||[]; }
+        catch(e){ setStatus("Detect-Fehler: "+e.message); }
+        const dets=raw.map(d=>({
+          id:d.id,
+          center:{x:d.center.x,y:d.center.y},
+          corners:(d.corners||[]).map(p=>({x:p.x,y:p.y}))
+        }));
+        draw(dets);
+        requestAnimationFrame(step);
+      }
+      step();
     }
-    requestAnimationFrame(loop);
-  })();
-</script>
+
+    start();
+  </script>
 </body>
 </html>
