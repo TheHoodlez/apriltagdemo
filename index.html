@@ -5,23 +5,20 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>AprilTag Demo – Live</title>
   <style>
-    :root{--bg:#0b0f1a;--fg:#eaf2ff;--panel:#121a2a}
-    *{box-sizing:border-box;font-family:system-ui,Arial,sans-serif}
-    body{margin:0;background:var(--bg);color:var(--fg);min-height:100vh;display:grid;place-items:center}
-    .wrap{width:min(100vw,900px);padding:14px}
-    h1{margin:0 0 10px;font-size:18px;color:#cfe3ff}
-    .view{position:relative;border-radius:12px;overflow:hidden;background:#000;box-shadow:0 8px 28px rgba(0,0,0,.45)}
+    body{margin:0;background:#0b0f1a;color:#eaf2ff;font-family:sans-serif;display:flex;justify-content:center;align-items:center;min-height:100vh}
+    .wrap{width:min(100vw,850px);padding:14px}
+    .view{position:relative;background:#000;border-radius:12px;overflow:hidden}
     video,canvas{width:100%;display:block}
     .hud{position:absolute;inset:0;pointer-events:none}
-    .panel{margin-top:10px;background:var(--panel);border:1px solid #213253;border-radius:12px;padding:10px;display:flex;gap:12px;align-items:center;flex-wrap:wrap}
-    .pill{padding:6px 10px;border-radius:999px;border:1px solid #2a3b66;background:#0e1524;color:#cfe3ff;cursor:pointer}
-    label{font-size:12px;opacity:.9}
-    .stat{font-size:12px;opacity:.9}
+    .panel{margin-top:10px;background:#121a2a;padding:8px;border-radius:8px;font-size:14px}
+    #status{font-weight:bold;color:#00e0ff}
+    .error{color:#ff5c5c}
+    .ok{color:#5cff7a}
   </style>
 </head>
 <body>
   <div class="wrap">
-    <h1>📷 AprilTag – Live Detection (tag36h11)</h1>
+    <h1>📷 AprilTag – Live Detection</h1>
 
     <div class="view">
       <video id="video" autoplay playsinline></video>
@@ -29,205 +26,37 @@
     </div>
 
     <div class="panel">
-      <button id="toggle" class="pill">⏸️ Pause</button>
-      <label><input type="checkbox" id="mirror" checked> Spiegeln</label>
-      <label>Skalierung <input type="range" id="scale" min="0.4" max="1.0" step="0.05" value="0.8"></label>
-      <span id="status" class="stat">Status: init…</span>
+      <div id="status">Status: Initialisiere…</div>
     </div>
   </div>
 
-  <!-- Robust: .wasm-Ort definieren + JS aus Root ODER vendor/ nachladen -->
   <script>
-    // Pfade vordefinieren (erst Root, dann vendor/)
-    const PATHS = {
-      js: ['./apriltag_wasm.js','./vendor/apriltag/apriltag_wasm.js'],
-      wasm: ['./apriltag_wasm.wasm','./vendor/apriltag/apriltag_wasm.wasm']
-    };
+    // --- Pfade zu den Dateien (müssen genau so im Repo liegen!) ---
+    const APRILTAG_JS   = '/apriltagdemo/vendor/apriltag/apriltag_wasm.js';
+    const APRILTAG_WASM = '/apriltagdemo/vendor/apriltag/apriltag_wasm.wasm';
 
-    // locateFile: sagt dem Loader, wo die .wasm liegt (korrespondierend zum tatsächlich geladenen JS)
-    function makeModuleLocateFile(baseIdx){
-      return function(path){
-        if (path.endsWith('.wasm')) return PATHS.wasm[baseIdx];
-        return path;
-      };
-    }
-
-    // JS dynamisch laden, mit Fallback
-    function loadApriltagScript() {
-      return new Promise((resolve,reject)=>{
-        let idx = 0;
-        const tryNext = () => {
-          if (idx >= PATHS.js.length) return reject(new Error('apriltag_wasm.js nicht gefunden'));
-          const s = document.createElement('script');
-          s.src = PATHS.js[idx];
-          s.async = true;
-          s.onload = () => resolve(idx);       // liefere Index des benutzten Pfads zurück
-          s.onerror = () => { idx++; tryNext(); };
-          document.head.appendChild(s);
-        };
-        tryNext();
-      });
-    }
-  </script>
-
-  <script>
-  (async () => {
-    const video = document.getElementById('video');
-    const hud = document.getElementById('hud');
-    const ctx = hud.getContext('2d', { willReadFrequently:true });
     const statusEl = document.getElementById('status');
-    const toggleBtn = document.getElementById('toggle');
-    const mirrorCb = document.getElementById('mirror');
-    const scaleEl = document.getElementById('scale');
+    function setStatus(msg, cls=""){ statusEl.textContent="Status: "+msg; statusEl.className=cls; }
 
-    let running = true;
-    let apriltag = null; // Instanz mit detect()
+    // Prüfen ob JS erreichbar
+    fetch(APRILTAG_JS, { method:"HEAD" }).then(r=>{
+      if(r.ok){ setStatus("JS gefunden ✅","ok"); } 
+      else { setStatus("JS fehlt ❌","error"); }
+    }).catch(()=>setStatus("Fehler beim Laden von JS ❌","error"));
 
-    const work = document.createElement('canvas');
-    const wctx = work.getContext('2d', { willReadFrequently:true });
+    // Prüfen ob WASM erreichbar
+    fetch(APRILTAG_WASM, { method:"HEAD" }).then(r=>{
+      if(r.ok){ setStatus("WASM gefunden ✅","ok"); } 
+      else { setStatus("WASM fehlt ❌","error"); }
+    }).catch(()=>setStatus("Fehler beim Laden von WASM ❌","error"));
 
-    const setStatus = (t)=> statusEl.textContent = 'Status: ' + t;
-    const drawStatusBox = (text)=>{
-      ctx.clearRect(0,0,hud.width,hud.height);
-      if (!text) return;
-      ctx.save();
-      ctx.fillStyle='rgba(0,0,0,.45)';
-      ctx.fillRect(10,10, Math.min(560, 20 + text.length*7.2), 36);
-      ctx.fillStyle='#00e0ff';
-      ctx.font='16px system-ui, Arial';
-      ctx.fillText(text, 20, 34);
-      ctx.restore();
-    };
-    const fit = ()=>{
-      hud.width = video.videoWidth || 640;
-      hud.height = video.videoHeight || 480;
-      const s = parseFloat(scaleEl.value || '0.8');
-      work.width = Math.round((video.videoWidth||640) * s);
-      work.height = Math.round((video.videoHeight||480) * s);
-    };
-
-    // 1) Kamera
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({ video:{ facingMode:'environment' }, audio:false });
-      video.srcObject = stream;
-      await video.play();
-      if (video.readyState>=2) fit(); else video.addEventListener('loadeddata', fit, { once:true });
-      setStatus('Kamera bereit');
-    } catch(e) {
-      setStatus('Kamerazugriff fehlgeschlagen: ' + e.message);
-      drawStatusBox('⚠️ Kamera-Fehler');
-      return;
-    }
-
-    // 2) Loader nachladen (Root → fallback vendor/)
-    let baseIdx = -1;
-    try {
-      baseIdx = await loadApriltagScript(); // 0 = Root, 1 = vendor/
-    } catch (e) {
-      setStatus('apriltag_wasm.js nicht geladen');
-      drawStatusBox('⚠️ ' + e.message);
-      return;
-    }
-
-    // 3) Factory warten + Instanz bauen (Emscripten MODULARIZE: Promise)
-    async function waitForFactory(maxMs=10000){
-      const t0 = performance.now();
-      while (!window.Apriltag && performance.now()-t0 < maxMs) {
-        drawStatusBox('ℹ️ Lade AprilTag…');
-        await new Promise(r=>setTimeout(r,100));
-      }
-      return !!window.Apriltag;
-    }
-    if (!(await waitForFactory())) {
-      setStatus('AprilTag JS nicht gefunden');
-      drawStatusBox('⚠️ apriltag_wasm.js nicht geladen');
-      return;
-    }
-
-    try {
-      apriltag = await window.Apriltag({
-        locateFile: makeModuleLocateFile(baseIdx) // sorgt dafür, dass .wasm am richtigen Ort gesucht wird
-      });
-      if (!apriltag || typeof apriltag.detect !== 'function') {
-        setStatus('AprilTag: detect() fehlt');
-        drawStatusBox('⚠️ Instanz ohne detect()');
-        return;
-      }
-      setStatus('AprilTag bereit');
-      drawStatusBox('');
-    } catch (e) {
-      setStatus('AprilTag init fehlgeschlagen: ' + e.message);
-      drawStatusBox('⚠️ Init-Fehler');
-      return;
-    }
-
-    // UI
-    scaleEl.addEventListener('input', fit);
-    toggleBtn.onclick = () => { running = !running; toggleBtn.textContent = running ? '⏸️ Pause' : '▶️ Start'; if (running) requestAnimationFrame(loop); };
-
-    // Helpers
-    function toGray8(imgData, w, h){
-      const g = new Uint8Array(w*h), d = imgData.data;
-      for(let i=0,j=0;i<d.length;i+=4,j++){
-        g[j] = (d[i]*0.2126 + d[i+1]*0.7152 + d[i+2]*0.0722) | 0;
-      }
-      return g;
-    }
-    function drawDetections(dets){
-      ctx.clearRect(0,0,hud.width,hud.height);
-      ctx.save();
-      if (mirrorCb.checked){ ctx.translate(hud.width,0); ctx.scale(-1,1); }
-      ctx.lineWidth = 3;
-      ctx.strokeStyle = '#00e0ff';
-      ctx.fillStyle = '#00e0ff';
-      for (const d of dets){
-        const cs = d.corners || [];
-        if (cs.length>=4){
-          ctx.beginPath();
-          ctx.moveTo(cs[0].x, cs[0].y);
-          for(let i=1;i<4;i++) ctx.lineTo(cs[i].x, cs[i].y);
-          ctx.closePath();
-          ctx.stroke();
-        }
-        const c = d.center;
-        if (c){ ctx.beginPath(); ctx.arc(c.x, c.y, 5, 0, Math.PI*2); ctx.fill();
-          ctx.fillText('ID: ' + d.id, c.x+8, c.y-8); }
-      }
-      ctx.restore();
-    }
-
-    async function detectOnce(){
-      if (!apriltag) return [];
-      wctx.save();
-      wctx.clearRect(0,0,work.width,work.height);
-      if (mirrorCb.checked){ wctx.translate(work.width,0); wctx.scale(-1,1); }
-      wctx.drawImage(video, 0, 0, work.width, work.height);
-      wctx.restore();
-
-      const img = wctx.getImageData(0,0,work.width,work.height);
-      const gray = toGray8(img, work.width, work.height);
-
-      let raw = [];
-      try { raw = apriltag.detect(gray, work.width, work.height) || []; }
-      catch(e){ setStatus('Detect-Fehler: '+e.message); return []; }
-
-      const sx = hud.width / work.width, sy = hud.height / work.height;
-      return raw.map(d => ({
-        id: d.id,
-        center: { x: d.center.x*sx, y: d.center.y*sy },
-        corners: (d.corners||[]).map(pt => ({ x: pt.x*sx, y: pt.y*sy }))
-      }));
-    }
-
-    async function loop(){
-      if (!running) return;
-      const dets = await detectOnce();
-      drawStatusBox(dets.length ? '' : '🔎 Keine Tags gefunden (tag36h11)');
-      if (dets.length) drawDetections(dets);
-      requestAnimationFrame(loop);
-    }
-    requestAnimationFrame(loop);
-  })();
+    // Loader mit locateFile
+    window.Module = { locateFile: (p)=> p.endsWith(".wasm") ? APRILTAG_WASM : p };
+    const s=document.createElement("script");
+    s.src=APRILTAG_JS; s.async=true;
+    s.onload=()=>setStatus("JS geladen – warte auf Initialisierung…");
+    s.onerror=()=>setStatus("JS konnte nicht geladen werden ❌","error");
+    document.head.appendChild(s);
   </script>
 </body>
 </html>
