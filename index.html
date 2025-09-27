@@ -36,11 +36,11 @@
     </div>
   </div>
 
-  <!-- AprilTag WASM-Library laden -->
+  <!-- AprilTag WASM-Library laden (Root-Pfad) -->
   <script>
     (function tryLoadLocal(){
       const s=document.createElement('script');
-      s.src='./vendor/apriltag/apriltag_wasm.js';
+      s.src='./apriltag_wasm.js';
       s.async=true;
       s.onerror=()=>console.warn('AprilTag JS nicht gefunden. Detection bleibt aus, Status zeigt Hinweis.');
       document.head.appendChild(s);
@@ -105,7 +105,7 @@
 
         if (!factory){
           setStatus('AprilTag-Library fehlt (JS/WASM nicht gefunden)');
-          drawStatusBox('ℹ️ AprilTag: Library fehlt – lege vendor/apriltag/* ab');
+          drawStatusBox('ℹ️ AprilTag: Library fehlt – lege Dateien ins Repo');
           return false;
         }
         detector = await factory({ family:'tag36h11' });
@@ -200,4 +200,3 @@
   </script>
 </body>
 </html>
-
