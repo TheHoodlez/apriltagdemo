@@ -36,31 +36,14 @@
     </div>
   </div>
 
-  <!-- 1) Sagt dem Loader, wo die .wasm liegt (Root neben index.html) -->
+  <!-- Loader aus dem Repo-Root laden -->
   <script>
-    window.Module = window.Module || {};
-    window.Module.locateFile = function (path) {
-      if (path.endsWith('.wasm')) return './apriltag_wasm.wasm';
-      return path;
-    };
-    // Falls der Loader dieses Signal nutzt:
-    window.Module.onRuntimeInitialized = function () {
-      window.__APRILTAG_WASM_READY__ = true;
-      console.log('[apriltag] onRuntimeInitialized');
-    };
+    const loader = document.createElement('script');
+    loader.src = './apriltag_wasm.js';
+    loader.async = true;
+    document.head.appendChild(loader);
   </script>
 
-  <!-- 2) Loader laden -->
-  <script>
-    const s = document.createElement('script');
-    s.src = './apriltag_wasm.js';
-    s.async = true;
-    s.onload = () => console.log('[apriltag] JS geladen');
-    s.onerror = () => console.error('[apriltag] JS NICHT gefunden');
-    document.head.appendChild(s);
-  </script>
-
-  <!-- 3) App-Logik -->
   <script>
   (async () => {
     const video = document.getElementById('video');
@@ -72,14 +55,13 @@
     const scaleEl = document.getElementById('scale');
 
     let running = true;
-    let tag = null;            // Modul/Objekt mit detect()
-    let ready = false;
+    let apriltag = null; // Instanz mit detect()
 
     const work = document.createElement('canvas');
     const wctx = work.getContext('2d', { willReadFrequently:true });
 
-    function setStatus(txt){ statusEl.textContent = 'Status: ' + txt; }
-    function drawStatusBox(text){
+    const setStatus = (t)=> statusEl.textContent = 'Status: ' + t;
+    const drawStatusBox = (text)=>{
       ctx.clearRect(0,0,hud.width,hud.height);
       ctx.save();
       ctx.fillStyle='rgba(0,0,0,.45)';
@@ -88,96 +70,72 @@
       ctx.font='16px system-ui, Arial';
       ctx.fillText(text, 20, 34);
       ctx.restore();
-    }
-    function fit() {
+    };
+    const fit = ()=>{
       hud.width = video.videoWidth || 640;
       hud.height = video.videoHeight || 480;
-      const s = parseFloat(scaleEl.value || "0.8");
+      const s = parseFloat(scaleEl.value || '0.8');
       work.width = Math.round((video.videoWidth||640) * s);
       work.height = Math.round((video.videoHeight||480) * s);
-    }
+    };
 
-    // Kamera starten
-    try{
+    // 1) Kamera
+    try {
       const stream = await navigator.mediaDevices.getUserMedia({ video:{ facingMode:'environment' }, audio:false });
       video.srcObject = stream;
       await video.play();
       if (video.readyState>=2) fit(); else video.addEventListener('loadeddata', fit, { once:true });
       setStatus('Kamera bereit');
-    }catch(e){
-      setStatus('Kamerazugriff fehlgeschlagen: '+e.message);
+    } catch(e) {
+      setStatus('Kamerazugriff fehlgeschlagen: ' + e.message);
       drawStatusBox('⚠️ Kamera-Fehler');
       return;
     }
 
-    // --- ROBUSTE INITIALISIERUNG (Promise | Callable | new) ---
-    async function initApriltag(maxMs=10000){
-      const wait = (ms)=>new Promise(r=>setTimeout(r,ms));
+    // 2) Auf globale Factory warten
+    async function waitForFactory(maxMs=10000){
       const t0 = performance.now();
-
-      // Warte, bis der Loader "Apriltag" überhaupt bereitstellt
-      while (!window.Apriltag && performance.now()-t0 < maxMs){
+      while (!window.Apriltag && performance.now()-t0 < maxMs) {
         drawStatusBox('ℹ️ Lade AprilTag…');
-        await wait(100);
+        await new Promise(r=>setTimeout(r,100));
       }
-      if (!window.Apriltag){ setStatus('AprilTag nicht gefunden'); return false; }
-
-      try {
-        let inst = null;
-        // 1) Viele Emscripten-Builds liefern ein Promise, wenn man die Factory aufruft
-        const res = window.Apriltag();
-        if (res && typeof res.then === 'function') {
-          console.log('[apriltag] Factory liefert Promise – warte…');
-          inst = await res;
-        } else if (res) {
-          inst = res; // direktes Objekt
-        } else {
-          // 2) Falls Aufruf ohne new nicht klappt, versuch "new"
-          try { inst = new window.Apriltag(); } catch {}
-        }
-
-        // 3) Alternativ-Exports (zur Sicherheit)
-        if (!inst && window.AprilTag) {
-          try { inst = window.AprilTag(); } catch { try { inst = new window.AprilTag(); } catch {} }
-        }
-        if (!inst && window.AprilTagDetector) {
-          try { inst = window.AprilTagDetector(); } catch { try { inst = new window.AprilTagDetector(); } catch {} }
-        }
-
-        if (!inst) { setStatus('AprilTag Init fehlgeschlagen (keine Instanz)'); return false; }
-
-        // Manche Builds setzen detect erst nach Runtime-Init
-        if (!inst.detect) {
-          const t1 = performance.now();
-          while (!inst.detect && performance.now()-t1 < 3000) { await wait(50); }
-        }
-
-        if (typeof inst.detect !== 'function') {
-          setStatus('AprilTag: detect() fehlt');
-          console.error('[apriltag] Instanz ohne detect()', inst);
-          return false;
-        }
-
-        tag = inst;
-        ready = true;
-        setStatus('AprilTag bereit');
-        console.log('[apriltag] bereit', tag);
-        return true;
-
-      } catch (e) {
-        console.error('[apriltag] Init-Fehler', e);
-        setStatus('AprilTag init fehlgeschlagen: ' + e.message);
-        return false;
-      }
+      return !!window.Apriltag;
+    }
+    if (!(await waitForFactory())) {
+      setStatus('AprilTag JS nicht gefunden');
+      drawStatusBox('⚠️ apriltag_wasm.js nicht geladen');
+      return;
     }
 
-    await initApriltag();
+    // 3) Instanz erzeugen (MODULARIZE-Factory → Promise)
+    try {
+      apriltag = await window.Apriltag({
+        locateFile: (p)=> p.endsWith('.wasm') ? './apriltag_wasm.wasm' : p
+      });
+      if (!apriltag || typeof apriltag.detect !== 'function') {
+        setStatus('AprilTag: detect() fehlt');
+        console.error('Apriltag instance', apriltag);
+        return;
+      }
+      setStatus('AprilTag bereit');
+    } catch (e) {
+      setStatus('AprilTag init fehlgeschlagen: ' + e.message);
+      console.error(e);
+      return;
+    }
 
     // UI
     scaleEl.addEventListener('input', fit);
     toggleBtn.onclick = () => { running = !running; toggleBtn.textContent = running ? '⏸️ Pause' : '▶️ Start'; if (running) requestAnimationFrame(loop); };
 
-    // Zeichnen
+    // Helpers
+    function toGray8(imgData, w, h){
+      const g = new Uint8Array(w*h), d = imgData.data;
+      for(let i=0,j=0;i<d.length;i+=4,j++){
+        g[j] = (d[i]*0.2126 + d[i+1]*0.7152 + d[i+2]*0.0722) | 0;
+      }
+      return g;
+    }
     function drawDetections(dets){
       ctx.clearRect(0,0,hud.width,hud.height);
       ctx.save();
@@ -185,7 +143,7 @@
       ctx.lineWidth = 3;
       ctx.strokeStyle = '#00e0ff';
       ctx.fillStyle = '#00e0ff';
-      for(const d of dets){
+      for (const d of dets){
         const cs = d.corners || [];
         if (cs.length>=4){
           ctx.beginPath();
@@ -201,16 +159,8 @@
       ctx.restore();
     }
 
-    function toGray8(imgData, w, h){
-      const g = new Uint8Array(w*h), d = imgData.data;
-      for(let i=0,j=0;i<d.length;i+=4,j++){
-        g[j] = (d[i]*0.2126 + d[i+1]*0.7152 + d[i+2]*0.0722) | 0;
-      }
-      return g;
-    }
-
     async function detectOnce(){
-      if (!ready || !tag) return [];
+      if (!apriltag) return [];
       wctx.save();
       wctx.clearRect(0,0,work.width,work.height);
       if (mirrorCb.checked){ wctx.translate(work.width,0); wctx.scale(-1,1); }
@@ -220,14 +170,9 @@
       const img = wctx.getImageData(0,0,work.width,work.height);
       const gray = toGray8(img, work.width, work.height);
 
-      let raw=[];
-      try{
-        raw = tag.detect(gray, work.width, work.height) || [];
-      }catch(e){
-        setStatus('Detect-Fehler: '+e.message);
-        console.error('[apriltag] detect()-Fehler', e);
-        return [];
-      }
+      let raw = [];
+      try { raw = apriltag.detect(gray, work.width, work.height) || []; }
+      catch(e){ setStatus('Detect-Fehler: '+e.message); return []; }
 
       const sx = hud.width / work.width, sy = hud.height / work.height;
       return raw.map(d => ({
@@ -239,13 +184,11 @@
 
     async function loop(){
       if (!running) return;
-      if (!ready){ drawStatusBox('ℹ️ Lade AprilTag…'); requestAnimationFrame(loop); return; }
       const dets = await detectOnce();
-      if (dets.length===0){ drawStatusBox('🔎 Keine Tags gefunden (tag36h11)'); }
-      else { drawDetections(dets); }
+      drawStatusBox(dets.length ? '' : '🔎 Keine Tags gefunden (tag36h11)');
+      if (dets.length) drawDetections(dets);
       requestAnimationFrame(loop);
     }
-
     requestAnimationFrame(loop);
   })();
   </script>
