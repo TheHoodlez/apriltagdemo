@@ -1,1 +1,27 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Kamera Test</title>
+<style>
+  body { margin:0; background:#000; display:flex; align-items:center; justify-content:center; height:100vh; }
+  video { width:100%; height:auto; }
+</style>
+</head>
+<body>
+  <video id="video" autoplay playsinline></video>
+  <script>
+    async function startCam(){
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ video:{ facingMode:"environment" } });
+        document.getElementById("video").srcObject = stream;
+      } catch(e){
+        alert("Fehler beim Zugriff auf die Kamera: " + e.message);
+      }
+    }
+    startCam();
+  </script>
+</body>
+</html>
 
