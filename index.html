@@ -1,3 +1,4 @@
+
 <!doctype html>
 <html lang="de">
 <head>
@@ -36,14 +37,19 @@
     </div>
   </div>
 
-  <!-- AprilTag WASM korrekt laden -->
+  <!-- WASM: Pfad + Ready-Callback -->
   <script>
+    // Sagt dem Emscripten-Loader, wo die .wasm liegt und setzt Ready-Flag
     window.Module = window.Module || {};
     window.Module.locateFile = function (path) {
       if (path.endsWith('.wasm')) return './apriltag_wasm.wasm';
       return path;
     };
+    window.Module.onRuntimeInitialized = function () {
+      window.__APRILTAG_WASM_READY__ = true;
+    };
   </script>
+  <!-- Loader laden (liegt neben index.html) -->
   <script>
     const s = document.createElement('script');
     s.src = './apriltag_wasm.js';
@@ -62,8 +68,8 @@
     const scaleEl = document.getElementById('scale');
 
     let running = true;
-    let tag = null;
-    let detectorReady = false;
+    let tag = null;            // Apriltag-Instanz
+    let detectorReady = false; // wenn true, detect() darf laufen
 
     const work = document.createElement('canvas');
     const wctx = work.getContext('2d', { willReadFrequently:true });
@@ -80,7 +86,7 @@
       ctx.clearRect(0,0,hud.width,hud.height);
       ctx.save();
       ctx.fillStyle='rgba(0,0,0,.45)';
-      ctx.fillRect(10,10, Math.min(420, 20 + text.length*7.2), 36);
+      ctx.fillRect(10,10, Math.min(440, 20 + text.length*7.2), 36);
       ctx.fillStyle='#00e0ff';
       ctx.font='16px system-ui, Arial';
       ctx.fillText(text, 20, 34);
@@ -100,29 +106,30 @@
       return;
     }
 
-    // 2) Auf Apriltag warten
-    async function waitForApriltag(maxMs=5000){
+    // 2) Auf WASM + globale Klasse warten und dann Instanz bauen
+    async function initApriltag(maxMs=8000){
       const t0 = performance.now();
-      while (!window.Apriltag && performance.now()-t0 < maxMs){
+      while (!(window.__APRILTAG_WASM_READY__ && (window.Apriltag || window.AprilTag || window.AprilTagDetector))
+             && performance.now()-t0 < maxMs){
         await new Promise(r=>setTimeout(r,100));
       }
-      return !!window.Apriltag;
-    }
+      const Ctor = window.Apriltag || window.AprilTag || window.AprilTagDetector;
+      if (!window.__APRILTAG_WASM_READY__ || !Ctor) return false;
 
-    if (await waitForApriltag()){
       try{
-        tag = window.Apriltag(() => {
-          detectorReady = true;
-          setStatus('AprilTag bereit');
-        });
+        // Manche Builds wollen "new", andere sind Callables – wir probieren beides.
+        try { tag = new Ctor(); } catch { tag = Ctor(); }
+        detectorReady = !!tag && typeof tag.detect === 'function';
+        if (detectorReady) setStatus('AprilTag bereit');
+        else setStatus('AprilTag: detect() nicht gefunden');
+        return detectorReady;
       }catch(e){
         setStatus('AprilTag init fehlgeschlagen: '+e.message);
-        drawStatusBox('⚠️ AprilTag Init-Fehler');
+        return false;
       }
-    }else{
-      setStatus('AprilTag-Library fehlt');
-      drawStatusBox('ℹ️ AprilTag: Library fehlt – prüfen, ob Dateien im Root liegen');
     }
+
+    await initApriltag();
 
     scaleEl.addEventListener('input', fit);
     toggleBtn.onclick = () => { running = !running; toggleBtn.textContent = running ? '⏸️ Pause' : '▶️ Start'; if (running) requestAnimationFrame(loop); };
@@ -135,11 +142,11 @@
       ctx.strokeStyle = '#00e0ff';
       ctx.fillStyle = '#00e0ff';
       for(const d of dets){
-        const corners = (d.corners || []).map(pt=>({x:pt.x, y:pt.y}));
-        if (corners.length>=4){
+        const cs = d.corners || [];
+        if (cs.length>=4){
           ctx.beginPath();
-          ctx.moveTo(corners[0].x, corners[0].y);
-          for(let i=1;i<4;i++) ctx.lineTo(corners[i].x, corners[i].y);
+          ctx.moveTo(cs[0].x, cs[0].y);
+          for(let i=1;i<4;i++) ctx.lineTo(cs[i].x, cs[i].y);
           ctx.closePath();
           ctx.stroke();
         }
