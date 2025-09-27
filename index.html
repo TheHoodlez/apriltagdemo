@@ -1,20 +1,20 @@
 <!doctype html>
 <html lang="de">
 <head>
-<meta charset="utf-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>AprilTag – Live Detection</title>
-<style>
-  body{margin:0;background:#0b0f1a;color:#eaf2ff;font-family:system-ui,Arial,sans-serif;display:flex;min-height:100vh;align-items:center;justify-content:center}
-  .wrap{width:min(100vw,900px);padding:16px}
-  h1{margin:0 0 12px}
-  .view{position:relative;background:#000;border-radius:12px;overflow:hidden}
-  video,canvas{width:100%;display:block}
-  .hud{position:absolute;inset:0;pointer-events:none}
-  .panel{margin-top:12px;background:#121a2a;border:1px solid #203153;border-radius:10px;padding:10px}
-  #status{font-weight:600}
-  .small{opacity:.9;font-size:12px}
-</style>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>AprilTag – Live Detection</title>
+  <style>
+    body{margin:0;background:#0b0f1a;color:#eaf2ff;font-family:system-ui,Arial,sans-serif;display:flex;min-height:100vh;align-items:center;justify-content:center}
+    .wrap{width:min(100vw,900px);padding:16px}
+    h1{margin:0 0 12px}
+    .view{position:relative;background:#000;border-radius:12px;overflow:hidden}
+    video,canvas{width:100%;display:block}
+    .hud{position:absolute;inset:0;pointer-events:none}
+    .panel{margin-top:12px;background:#121a2a;border:1px solid #203153;border-radius:10px;padding:10px}
+    #status{font-weight:600}
+    .small{opacity:.9;font-size:12px}
+  </style>
 </head>
 <body>
 <div class="wrap">
@@ -30,107 +30,107 @@
 </div>
 
 <script>
-  // 1) Kandidaten-Pfade (relativ + absolut)
-  const CANDIDATES = {
-    js:   ["./apriltag_wasm.js", "/apriltagdemo/apriltag_wasm.js"],
-    wasm: ["./apriltag_wasm.wasm", "/apriltagdemo/apriltag_wasm.wasm"]
-  };
+  // Dateien liegen im selben Ordner wie index.html
+  const JS_URL   = './apriltag_wasm.js';
+  const WASM_URL = './apriltag_wasm.wasm';
 
   const statusEl = document.getElementById('status');
   const debugEl  = document.getElementById('debug');
-  const setStatus = (t)=> statusEl.textContent = "Status: " + t;
+  const setStatus = (t)=> statusEl.textContent = 'Status: ' + t;
   const log = (t)=> debugEl.textContent = t;
 
-  // 2) Ersten funktionierenden URL aus Liste testen (HEAD, mit Cachebust)
-  async function pickUrl(list){
-    for(const u of list){
-      try{
-        const r = await fetch(u + "?v=" + Date.now(), {method:"HEAD", cache:"no-store"});
-        if (r.ok) return u;
-      }catch(_) {}
-    }
-    return null;
-  }
-
-  // 3) Video vorbereiten
+  // Kamerabild vorbereiten
   (async ()=>{
     try{
-      const stream = await navigator.mediaDevices.getUserMedia({ video:{ facingMode:"environment" }, audio:false });
-      const v = document.getElementById("video");
+      const stream = await navigator.mediaDevices.getUserMedia({ video:{ facingMode:'environment' }, audio:false });
+      const v = document.getElementById('video');
       v.srcObject = stream; await v.play();
-      const hud = document.getElementById("hud");
+      const hud = document.getElementById('hud');
       hud.width  = v.videoWidth  || 640;
       hud.height = v.videoHeight || 480;
-    }catch(e){
-      setStatus("Kamera-Fehler: " + e.message);
-    }
+    }catch(e){ setStatus('Kamera-Fehler: ' + e.message); }
   })();
 
-  // 4) Pfade ermitteln + laden
-  (async ()=>{
-    const jsUrl   = await pickUrl(CANDIDATES.js);
-    const wasmUrl = await pickUrl(CANDIDATES.wasm);
+  // .wasm für Emscripten lokalisieren
+  window.Module = { locateFile: (p)=> p.endsWith('.wasm') ? WASM_URL : p };
 
-    if(!jsUrl){ setStatus("apriltag_wasm.js nicht gefunden ❌"); log("getestet: " + CANDIDATES.js.join(", ")); return; }
-    if(!wasmUrl){ setStatus("apriltag_wasm.wasm nicht gefunden ❌"); log("getestet: " + CANDIDATES.wasm.join(", ")); return; }
-
-    log(`JS-Pfad: ${jsUrl}  |  WASM-Pfad: ${wasmUrl}`);
-
-    // Emscripten: wo .wasm liegt
-    window.Module = { locateFile: (p)=> p.endsWith(".wasm") ? wasmUrl : p };
-
-    // Loader laden
-    const s = document.createElement("script");
-    s.src = jsUrl + "?v=" + Date.now();
-    s.async = true;
-    s.onload  = ()=> setStatus("JS geladen – warte auf Initialisierung…");
-    s.onerror = ()=> setStatus("JS konnte nicht geladen werden ❌");
-    document.head.appendChild(s);
-  })();
+  // Loader laden
+  const s = document.createElement('script');
+  s.src = JS_URL + '?v=' + Date.now();
+  s.async = true;
+  s.onload  = ()=> setStatus('JS geladen – warte auf Initialisierung…');
+  s.onerror = ()=> setStatus('JS konnte nicht geladen werden ❌');
+  document.head.appendChild(s);
 </script>
 
 <script>
-  // 5) AprilTag initialisieren (MODULARIZE-Factory → Promise) und erkennen
+  // Initialisierung, die mit Apriltag / AprilTag / AprilTagWasm klarkommt
   (async ()=>{
-    // Auf Factory warten
-    const waitFactory = async (ms=12000)=>{
+    function pickFactory(){
+      return window.Apriltag || window.AprilTag || window.AprilTagWasm || null;
+    }
+    async function waitForFactory(ms=12000){
       const t0 = performance.now();
-      while(!window.Apriltag && performance.now()-t0 < ms){ await new Promise(r=>setTimeout(r,100)); }
-      return !!window.Apriltag;
-    };
-    if(!await waitFactory()){ setStatus("AprilTag JS nicht gefunden ❌"); return; }
-
-    let tag;
-    try{
-      tag = await window.Apriltag({
-        locateFile: (p)=> p.endsWith(".wasm") ? (window.Module && window.Module.locateFile(".wasm")) : p
-      });
-      if(typeof tag.detect !== "function"){ setStatus("AprilTag detect() fehlt ❌"); return; }
-      setStatus("AprilTag bereit ✅");
-    }catch(e){
-      setStatus("AprilTag init fehlgeschlagen: " + e.message);
-      return;
+      while(!pickFactory() && performance.now()-t0 < ms){
+        await new Promise(r=>setTimeout(r,100));
+      }
+      return pickFactory();
+    }
+    async function createModule(factory){
+      // 1) Preferred: Factory({ locateFile }) → Promise
+      try{
+        const r = factory({ locateFile:(p)=> p.endsWith('.wasm') ? WASM_URL : p });
+        if (r && typeof r.then === 'function') return await r;
+        if (r) return r;
+      }catch{}
+      // 2) Fallback: factory() → Promise/Objekt
+      try{
+        const r = factory();
+        if (r && typeof r.then === 'function') return await r;
+        if (r) return r;
+      }catch{}
+      // 3) Fallback: new factory()
+      try{ return new factory(); }catch{}
+      return null;
     }
 
-    // Erkennungsschleife
-    const v = document.getElementById("video");
-    const hud = document.getElementById("hud");
-    const ctx = hud.getContext("2d", { willReadFrequently:true });
-    const work = document.createElement("canvas");
-    const wctx = work.getContext("2d", { willReadFrequently:true });
-    const scale = 0.8;
-    work.width  = (v.videoWidth||640) * scale;
-    work.height = (v.videoHeight||480) * scale;
+    const factory = await waitForFactory();
+    if (!factory){ setStatus('AprilTag JS nicht gefunden ❌'); return; }
+    log('Factory erkannt: ' + (factory.name || '(anonym)'));
 
-    const toGray = (img,w,h)=>{ const g=new Uint8Array(w*h), d=img.data; for(let i=0,j=0;i<d.length;i+=4,j++) g[j]=(d[i]*.2126+d[i+1]*.7152+d[i+2]*.0722)|0; return g; };
+    let mod = await createModule(factory);
+    if (!mod){ setStatus('AprilTag init fehlgeschlagen ❌'); return; }
+
+    // Mögliche Orte für detect(): mod.detect oder mod.Apriltag.detect etc.
+    const detect =
+      (typeof mod.detect === 'function' && mod.detect.bind(mod)) ||
+      (mod.Apriltag && typeof mod.Apriltag.detect === 'function' && mod.Apriltag.detect.bind(mod.Apriltag)) ||
+      (mod.AprilTag && typeof mod.AprilTag.detect === 'function' && mod.AprilTag.detect.bind(mod.AprilTag)) ||
+      null;
+
+    if (!detect){ setStatus('AprilTag: detect() nicht gefunden ❌'); log('Eigenschaften: ' + Object.keys(mod).join(', ')); return; }
+
+    setStatus('AprilTag bereit ✅');
+
+    // ------- Detection Loop -------
+    const v = document.getElementById('video');
+    const hud = document.getElementById('hud');
+    const ctx = hud.getContext('2d', { willReadFrequently:true });
+    const work = document.createElement('canvas');
+    const wctx = work.getContext('2d', { willReadFrequently:true });
+    const scale = 0.8;
+    work.width  = (v.videoWidth||640)*scale;
+    work.height = (v.videoHeight||480)*scale;
+
+    const toGray = (img,w,h)=>{const g=new Uint8Array(w*h),d=img.data;for(let i=0,j=0;i<d.length;i+=4,j++){g[j]=(d[i]*.2126+d[i+1]*.7152+d[i+2]*.0722)|0;}return g;};
 
     function draw(dets){
       ctx.clearRect(0,0,hud.width,hud.height);
-      ctx.lineWidth=3; ctx.strokeStyle="#00e0ff"; ctx.fillStyle="#00e0ff";
+      ctx.lineWidth=3; ctx.strokeStyle='#00e0ff'; ctx.fillStyle='#00e0ff';
       for(const d of dets){
         const cs=d.corners||[], c=d.center;
         if(cs.length>=4){ ctx.beginPath(); ctx.moveTo(cs[0].x,cs[0].y); for(let i=1;i<4;i++) ctx.lineTo(cs[i].x,cs[i].y); ctx.closePath(); ctx.stroke(); }
-        if(c){ ctx.beginPath(); ctx.arc(c.x,c.y,5,0,Math.PI*2); ctx.fill(); ctx.fillText("ID: "+d.id, c.x+8, c.y-8); }
+        if(c){ ctx.beginPath(); ctx.arc(c.x,c.y,5,0,Math.PI*2); ctx.fill(); ctx.fillText('ID: '+d.id, c.x+8, c.y-8); }
       }
     }
 
@@ -138,12 +138,9 @@
       wctx.drawImage(v,0,0,work.width,work.height);
       const img = wctx.getImageData(0,0,work.width,work.height);
       const gray = toGray(img,work.width,work.height);
-      let raw=[]; try{ raw = tag.detect(gray,work.width,work.height) || []; }catch(e){ setStatus("Detect-Fehler: "+e.message); }
-      const sx = hud.width/work.width, sy = hud.height/work.height;
-      const dets = raw.map(d=>({ id:d.id,
-        center:{x:d.center.x*sx, y:d.center.y*sy},
-        corners:(d.corners||[]).map(p=>({x:p.x*sx, y:p.y*sy}))
-      }));
+      let raw=[]; try{ raw = detect(gray, work.width, work.height) || []; }catch(e){ setStatus('Detect-Fehler: ' + e.message); }
+      const sx=hud.width/work.width, sy=hud.height/work.height;
+      const dets = raw.map(d=>({ id:d.id, center:{x:d.center.x*sx,y:d.center.y*sy}, corners:(d.corners||[]).map(p=>({x:p.x*sx,y:p.y*sy})) }));
       draw(dets);
       requestAnimationFrame(loop);
     }
