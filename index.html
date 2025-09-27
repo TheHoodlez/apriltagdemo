@@ -1,27 +1,214 @@
 <!doctype html>
 <html lang="de">
 <head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Kamera Test</title>
-<style>
-  body { margin:0; background:#000; display:flex; align-items:center; justify-content:center; height:100vh; }
-  video { width:100%; height:auto; }
-</style>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>AprilTag Demo – Live</title>
+  <style>
+    :root{--bg:#0b0f1a;--fg:#eaf2ff;--panel:#121a2a}
+    *{box-sizing:border-box;font-family:system-ui,Arial,sans-serif}
+    body{margin:0;background:var(--bg);color:var(--fg);min-height:100vh;display:grid;place-items:center}
+    .wrap{width:min(100vw,900px);padding:14px}
+    h1{margin:0 0 10px;font-size:18px;color:#cfe3ff}
+    .view{position:relative;border-radius:12px;overflow:hidden;background:#000;box-shadow:0 8px 28px rgba(0,0,0,.45)}
+    video,canvas{width:100%;display:block}
+    .hud{position:absolute;inset:0;pointer-events:none}
+    .panel{margin-top:10px;background:var(--panel);border:1px solid #213253;border-radius:12px;padding:10px;display:flex;gap:12px;align-items:center;flex-wrap:wrap}
+    .pill{padding:6px 10px;border-radius:999px;border:1px solid #2a3b66;background:#0e1524;color:#cfe3ff;cursor:pointer}
+    label{font-size:12px;opacity:.9}
+    .stat{font-size:12px;opacity:.9}
+  </style>
 </head>
 <body>
-  <video id="video" autoplay playsinline></video>
+  <div class="wrap">
+    <h1>📷 AprilTag – Live Detection (tag36h11)</h1>
+
+    <div class="view">
+      <video id="video" autoplay playsinline></video>
+      <canvas id="hud" class="hud"></canvas>
+    </div>
+
+    <div class="panel">
+      <button id="toggle" class="pill">⏸️ Pause</button>
+      <label><input type="checkbox" id="mirror" checked> Spiegeln</label>
+      <label>Skalierung <input type="range" id="scale" min="0.4" max="1.0" step="0.05" value="0.8"></label>
+      <span id="status" class="stat">Status: init…</span>
+    </div>
+  </div>
+
+  <!-- Wenn vorhanden, diese Datei lokal bereitstellen (empfohlen) -->
+  <!-- Pfad: vendor/apriltag/apriltag.min.js  +  vendor/apriltag/apriltag.wasm -->
   <script>
-    async function startCam(){
-      try {
-        const stream = await navigator.mediaDevices.getUserMedia({ video:{ facingMode:"environment" } });
-        document.getElementById("video").srcObject = stream;
-      } catch(e){
-        alert("Fehler beim Zugriff auf die Kamera: " + e.message);
+    // Dynamischer Loader: lädt die lokale JS, wenn vorhanden.
+    (function tryLoadLocal(){
+      const s=document.createElement('script');
+      s.src='./vendor/apriltag/apriltag.min.js';
+      s.async=true;
+      s.onerror=()=>console.warn('AprilTag JS nicht gefunden. Detection bleibt aus, Status zeigt Hinweis.');
+      document.head.appendChild(s);
+    })();
+  </script>
+
+  <script>
+  (async () => {
+    const video = document.getElementById('video');
+    const hud = document.getElementById('hud');
+    const ctx = hud.getContext('2d', { willReadFrequently:true });
+    const statusEl = document.getElementById('status');
+    const toggleBtn = document.getElementById('toggle');
+    const mirrorCb = document.getElementById('mirror');
+    const scaleEl = document.getElementById('scale');
+
+    let running = true;
+    let detector = null;
+
+    const work = document.createElement('canvas');
+    const wctx = work.getContext('2d', { willReadFrequently:true });
+
+    function setStatus(txt){ statusEl.textContent = 'Status: ' + txt; }
+    function fit() {
+      hud.width = video.videoWidth || 640;
+      hud.height = video.videoHeight || 480;
+      const s = parseFloat(scaleEl.value || "0.8");
+      work.width = Math.round((video.videoWidth||640) * s);
+      work.height = Math.round((video.videoHeight||480) * s);
+    }
+    function drawStatusBox(text){
+      ctx.clearRect(0,0,hud.width,hud.height);
+      ctx.save();
+      ctx.fillStyle='rgba(0,0,0,.45)';
+      ctx.fillRect(10,10, Math.min(380, 20 + text.length*7.2), 36);
+      ctx.fillStyle='#00e0ff';
+      ctx.font='16px system-ui, Arial';
+      ctx.fillText(text, 20, 34);
+      ctx.restore();
+    }
+
+    // 1) Kamera
+    try{
+      const stream = await navigator.mediaDevices.getUserMedia({ video:{ facingMode:'environment' }, audio:false });
+      video.srcObject = stream;
+      await video.play();
+      if (video.readyState>=2) fit(); else video.addEventListener('loadeddata', fit, { once:true });
+      setStatus('Kamera bereit');
+    }catch(e){
+      setStatus('Kamerazugriff fehlgeschlagen: '+e.message);
+      drawStatusBox('⚠️ Kamera-Fehler');
+      return;
+    }
+
+    // 2) AprilTag-Detector initialisieren (wenn Lib da)
+    async function initDetectorIfAvailable(){
+      // Häufige Varianten verschiedener Browser-Builds:
+      // - window.createAprilTagDetector(opts)
+      // - window.AprilTag.createDetector(opts)
+      // - window.AprilTagDetector.create(opts)
+      try{
+        const factory =
+          window.createAprilTagDetector ||
+          (window.AprilTag && window.AprilTag.createDetector) ||
+          (window.AprilTagDetector && window.AprilTagDetector.create);
+
+        if (!factory){
+          setStatus('AprilTag-Library fehlt (JS/WASM nicht gefunden)');
+          drawStatusBox('ℹ️ AprilTag: Library fehlt – lege vendor/apriltag/* ab');
+          return false;
+        }
+        detector = await factory({ family:'tag36h11' });
+        setStatus('AprilTag bereit');
+        return true;
+      }catch(e){
+        setStatus('AprilTag init fehlgeschlagen: '+e.message);
+        drawStatusBox('⚠️ AprilTag Init-Fehler');
+        return false;
       }
     }
-    startCam();
+
+    // später erneut versuchen (falls Script etwas später lädt)
+    let detectorReady = await initDetectorIfAvailable();
+    setTimeout(async ()=>{ if(!detectorReady){ detectorReady = await initDetectorIfAvailable(); } }, 1200);
+
+    scaleEl.addEventListener('input', fit);
+    toggleBtn.onclick = () => { running = !running; toggleBtn.textContent = running ? '⏸️ Pause' : '▶️ Start'; if (running) requestAnimationFrame(loop); };
+
+    function drawDetections(dets){
+      ctx.clearRect(0,0,hud.width,hud.height);
+      ctx.save();
+      if (mirrorCb.checked){ ctx.translate(hud.width,0); ctx.scale(-1,1); }
+      ctx.lineWidth = 3;
+      ctx.strokeStyle = '#00e0ff';
+      ctx.fillStyle = '#00e0ff';
+      for(const d of dets){
+        const corners = (d.corners || d.p || []).map(pt=>({x:pt.x, y:pt.y}));
+        if (corners.length>=4){
+          ctx.beginPath();
+          ctx.moveTo(corners[0].x, corners[0].y);
+          for(let i=1;i<4;i++) ctx.lineTo(corners[i].x, corners[i].y);
+          ctx.closePath();
+          ctx.stroke();
+        }
+        const c = d.center || d.center2d || {x:d.cx, y:d.cy};
+        if (c && Number.isFinite(c.x) && Number.isFinite(c.y)){
+          ctx.beginPath(); ctx.arc(c.x, c.y, 5, 0, Math.PI*2); ctx.fill();
+          ctx.fillText('ID: ' + (d.id ?? d.tag_id ?? d.tagId), c.x+8, c.y-8);
+        }
+      }
+      ctx.restore();
+    }
+
+    function toGray8(imgData, w, h){
+      const g = new Uint8Array(w*h), d = imgData.data;
+      for(let i=0,j=0;i<d.length;i+=4,j++){
+        g[j] = (d[i]*0.2126 + d[i+1]*0.7152 + d[i+2]*0.0722) | 0;
+      }
+      return g;
+    }
+
+    async function detectOnce(){
+      if (!detector) return [];
+      // Bild in Arbeitsleinwand (mit optionalem Spiegeln)
+      wctx.save();
+      wctx.clearRect(0,0,work.width,work.height);
+      if (mirrorCb.checked){ wctx.translate(work.width,0); wctx.scale(-1,1); }
+      wctx.drawImage(video, 0, 0, work.width, work.height);
+      wctx.restore();
+
+      const img = wctx.getImageData(0,0,work.width,work.height);
+      const gray = toGray8(img, work.width, work.height);
+
+      // Häufige Signaturen:
+      // detector.detect(gray, width, height, options)
+      // oder detector(gray, width, height)
+      let raw = [];
+      try{
+        raw = detector.detect
+          ? await detector.detect(gray, work.width, work.height, { quad_decimate: 1.0 })
+          : await detector(gray, work.width, work.height);
+      }catch(e){
+        setStatus('Detect-Fehler: '+e.message);
+        return [];
+      }
+
+      // Koordinaten auf HUD skalieren
+      const sx = hud.width / work.width, sy = hud.height / work.height;
+      return raw.map(d => ({
+        id: d.id ?? d.tag_id ?? d.tagId,
+        center: { x: (d.center?.x ?? d.cx)*sx, y: (d.center?.y ?? d.cy)*sy },
+        corners: (d.corners||d.p||[]).map(pt => ({ x: pt.x*sx, y: pt.y*sy }))
+      }));
+    }
+
+    async function loop(){
+      if (!running) return;
+      if (!detector){ drawStatusBox('ℹ️ AprilTag: Library fehlt'); requestAnimationFrame(loop); return; }
+      const dets = await detectOnce();
+      if (dets.length===0){ drawStatusBox('🔎 Keine Tags gefunden (tag36h11)'); }
+      else { drawDetections(dets); }
+      requestAnimationFrame(loop);
+    }
+
+    requestAnimationFrame(loop);
+  })();
   </script>
 </body>
 </html>
-
