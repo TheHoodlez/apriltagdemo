@@ -36,12 +36,38 @@
     </div>
   </div>
 
-  <!-- Loader aus dem Repo-Root laden -->
+  <!-- Robust: .wasm-Ort definieren + JS aus Root ODER vendor/ nachladen -->
   <script>
-    const loader = document.createElement('script');
-    loader.src = './apriltag_wasm.js';
-    loader.async = true;
-    document.head.appendChild(loader);
+    // Pfade vordefinieren (erst Root, dann vendor/)
+    const PATHS = {
+      js: ['./apriltag_wasm.js','./vendor/apriltag/apriltag_wasm.js'],
+      wasm: ['./apriltag_wasm.wasm','./vendor/apriltag/apriltag_wasm.wasm']
+    };
+
+    // locateFile: sagt dem Loader, wo die .wasm liegt (korrespondierend zum tatsächlich geladenen JS)
+    function makeModuleLocateFile(baseIdx){
+      return function(path){
+        if (path.endsWith('.wasm')) return PATHS.wasm[baseIdx];
+        return path;
+      };
+    }
+
+    // JS dynamisch laden, mit Fallback
+    function loadApriltagScript() {
+      return new Promise((resolve,reject)=>{
+        let idx = 0;
+        const tryNext = () => {
+          if (idx >= PATHS.js.length) return reject(new Error('apriltag_wasm.js nicht gefunden'));
+          const s = document.createElement('script');
+          s.src = PATHS.js[idx];
+          s.async = true;
+          s.onload = () => resolve(idx);       // liefere Index des benutzten Pfads zurück
+          s.onerror = () => { idx++; tryNext(); };
+          document.head.appendChild(s);
+        };
+        tryNext();
+      });
+    }
   </script>
 
   <script>
@@ -63,9 +89,10 @@
     const setStatus = (t)=> statusEl.textContent = 'Status: ' + t;
     const drawStatusBox = (text)=>{
       ctx.clearRect(0,0,hud.width,hud.height);
+      if (!text) return;
       ctx.save();
       ctx.fillStyle='rgba(0,0,0,.45)';
-      ctx.fillRect(10,10, Math.min(460, 20 + text.length*7.2), 36);
+      ctx.fillRect(10,10, Math.min(560, 20 + text.length*7.2), 36);
       ctx.fillStyle='#00e0ff';
       ctx.font='16px system-ui, Arial';
       ctx.fillText(text, 20, 34);
@@ -92,7 +119,17 @@
       return;
     }
 
-    // 2) Auf globale Factory warten
+    // 2) Loader nachladen (Root → fallback vendor/)
+    let baseIdx = -1;
+    try {
+      baseIdx = await loadApriltagScript(); // 0 = Root, 1 = vendor/
+    } catch (e) {
+      setStatus('apriltag_wasm.js nicht geladen');
+      drawStatusBox('⚠️ ' + e.message);
+      return;
+    }
+
+    // 3) Factory warten + Instanz bauen (Emscripten MODULARIZE: Promise)
     async function waitForFactory(maxMs=10000){
       const t0 = performance.now();
       while (!window.Apriltag && performance.now()-t0 < maxMs) {
@@ -107,20 +144,20 @@
       return;
     }
 
-    // 3) Instanz erzeugen (MODULARIZE-Factory → Promise)
     try {
       apriltag = await window.Apriltag({
-        locateFile: (p)=> p.endsWith('.wasm') ? './apriltag_wasm.wasm' : p
+        locateFile: makeModuleLocateFile(baseIdx) // sorgt dafür, dass .wasm am richtigen Ort gesucht wird
       });
       if (!apriltag || typeof apriltag.detect !== 'function') {
         setStatus('AprilTag: detect() fehlt');
-        console.error('Apriltag instance', apriltag);
+        drawStatusBox('⚠️ Instanz ohne detect()');
         return;
       }
       setStatus('AprilTag bereit');
+      drawStatusBox('');
     } catch (e) {
       setStatus('AprilTag init fehlgeschlagen: ' + e.message);
-      console.error(e);
+      drawStatusBox('⚠️ Init-Fehler');
       return;
     }
 
